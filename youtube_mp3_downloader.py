@@ -13,39 +13,38 @@ playlist_metadata = []
 
 MAX_DURATION_SECONDS = 15 * 60  # 15 minutes
 
-def search_youtube(query, max_results=10):
-    search = VideosSearch(query, limit=max_results)
-    results = search.result()['result']
-    # Filter results by duration if available
-    filtered = []
-    for video in results:
-        duration_str = video.get('duration')  # e.g. "12:34" or None
-        if duration_str:
-            parts = duration_str.split(':')
-            seconds = 0
-            if len(parts) == 3:  # H:M:S
-                seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
-            elif len(parts) == 2:  # M:S
-                seconds = int(parts[0]) * 60 + int(parts[1])
-            elif len(parts) == 1:  # S
-                seconds = int(parts[0])
-            if seconds <= MAX_DURATION_SECONDS:
-                filtered.append((video['title'], video['link']))
-        else:
-            # No duration info, include to be safe or skip?  
-            # Here we skip, but you can change if you want
-            pass
-    return filtered
-
 def sanitize_filename(title):
     return ''.join(c if c.isalnum() or c in ' ._-()[]' else '_' for c in title)
+
+def sanitize_folder_name(name):
+    return ''.join(c if c.isalnum() or c in '-_' else '_' for c in name.strip().replace(' ', '_'))
 
 def is_network_error(error_str):
     network_error_signals = [
         "HTTPError", "ConnectionResetError", "TimeoutError",
-        "SSLError", "ConnectionError", "Timeout"
+        "SSLError", "ConnectionError", "timeout", "network", "temporarily unavailable"
     ]
-    return any(signal in error_str for signal in network_error_signals)
+    return any(signal.lower() in error_str.lower() for signal in network_error_signals)
+
+def search_youtube(query, max_results=10):
+    search = VideosSearch(query, limit=max_results)
+    results = search.result()['result']
+    filtered = []
+    for video in results:
+        duration_str = video.get('duration')  # "12:34" or None
+        if duration_str:
+            parts = duration_str.split(':')
+            seconds = 0
+            if len(parts) == 3:
+                seconds = int(parts[0]) * 3600 + int(parts[1]) * 60 + int(parts[2])
+            elif len(parts) == 2:
+                seconds = int(parts[0]) * 60 + int(parts[1])
+            else:
+                seconds = int(parts[0])
+            if seconds <= MAX_DURATION_SECONDS:
+                filtered.append((video['title'], video['link']))
+        # Skipping videos without duration info to be safe
+    return filtered
 
 def download_audio_with_ytdlp(title, url, output_folder="downloads", quiet=False, retries=2):
     safe_title = sanitize_filename(title)
@@ -93,30 +92,36 @@ def download_audio_with_ytdlp(title, url, output_folder="downloads", quiet=False
                 break
 
 def download_mp3s_for_query(query, max_results=10, threads=4):
-    print(f"🔍 Searching YouTube for videos ≤15 minutes: '{query}'...")
+    print(f"🔍 Searching YouTube for videos: '{query}'...")
     video_results = search_youtube(query, max_results)
 
     if not video_results:
         print("⚠️ No videos found matching duration criteria.")
         return
 
-    if not os.path.exists("downloads"):
-        os.makedirs("downloads")
+    safe_folder = sanitize_folder_name(query)
+    output_folder = os.path.join("downloads", safe_folder)
+    os.makedirs(output_folder, exist_ok=True)
 
     with ThreadPoolExecutor(max_workers=threads) as executor:
-        list(tqdm(executor.map(lambda args: download_audio_with_ytdlp(*args, "downloads", True), video_results), total=len(video_results)))
+        list(tqdm(
+            executor.map(lambda args: download_audio_with_ytdlp(*args, output_folder, True), video_results),
+            total=len(video_results)
+        ))
 
     # Save failed downloads log
     if failed_downloads:
-        with open("failed_downloads.log", "w") as f:
+        failed_log_path = os.path.join(output_folder, "failed_downloads.log")
+        with open(failed_log_path, "w") as f:
             for item in failed_downloads:
                 f.write(f"{item['title']} - {item['url']}\n")
-        print(f"⚠️ Logged {len(failed_downloads)} failed downloads to failed_downloads.log")
+        print(f"⚠️ Logged {len(failed_downloads)} failed downloads to {failed_log_path}")
 
     # Save playlist metadata
-    with open("playlist.json", "w") as f:
+    playlist_path = os.path.join(output_folder, "playlist.json")
+    with open(playlist_path, "w") as f:
         json.dump(playlist_metadata, f, indent=2, ensure_ascii=False)
-    print("📄 Playlist metadata saved to playlist.json")
+    print(f"📄 Playlist metadata saved to {playlist_path}")
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Download MP3s from YouTube based on a search query, max duration 15 minutes.")
